@@ -4,28 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 
-	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
+	"github.com/slack-go/slack"
 )
-
-type SlackRequest struct {
-	Token       string `form:"token"`
-	TeamID      string `form:"team_id"`
-	TeamDomain  string `form:"team_domain"`
-	ChannelID   string `form:"channel_id"`
-	ChannelName string `form:"channel_name"`
-	UserID      string `form:"user_id"`
-	UserName    string `form:"user_name"`
-	Command     string `form:"command"`
-	Text        string `form:"text"`
-	ResponseURL string `form:"response_url"`
-	TriggerID   string `form:"trigger_id"`
-}
 
 type OpenAIRequest struct {
 	Prompt    string `json:"prompt"`
@@ -45,43 +30,37 @@ func main() {
 		log.Fatalf("Error loading .env file")
 	}
 
+	slackVerificationToken := os.Getenv("SLACK_VERIFICATION_TOKEN")
 	azureEndpoint := os.Getenv("AZURE_OPENAI_ENDPOINT")
 	azureApiKey := os.Getenv("AZURE_API_KEY")
-	slackToken := os.Getenv("SLACK_VERIFICATION_TOKEN")
 
-	r := gin.Default()
-
-	r.POST("/slack/command", func(c *gin.Context) {
-		var slackReq SlackRequest
-		if err := c.ShouldBind(&slackReq); err != nil {
-			log.Printf("Bind error: %v", err)
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	http.HandleFunc("/slack/command", func(w http.ResponseWriter, r *http.Request) {
+		s, err := slack.SlashCommandParse(r)
+		if err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
 			return
 		}
 
-		if slackReq.Token != slackToken {
-			log.Printf("Invalid token: %s", slackReq.Token)
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+		if !s.ValidateToken(slackVerificationToken) {
+			http.Error(w, "Invalid token", http.StatusUnauthorized)
 			return
 		}
 
 		openAIReq := OpenAIRequest{
-			Prompt:    slackReq.Text,
+			Prompt:    s.Text,
 			MaxTokens: 50,
 		}
 
 		reqBody, err := json.Marshal(openAIReq)
 		if err != nil {
-			log.Printf("JSON marshal error: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to encode request"})
+			http.Error(w, "Failed to encode request", http.StatusInternalServerError)
 			return
 		}
 
 		client := &http.Client{}
 		req, err := http.NewRequest("POST", azureEndpoint, bytes.NewBuffer(reqBody))
 		if err != nil {
-			log.Printf("Request creation error: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
+			http.Error(w, "Failed to create request", http.StatusInternalServerError)
 			return
 		}
 
@@ -90,31 +69,31 @@ func main() {
 
 		resp, err := client.Do(req)
 		if err != nil {
-			log.Printf("Request error: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send request"})
+			http.Error(w, "Failed to send request", http.StatusInternalServerError)
 			return
 		}
 		defer resp.Body.Close()
 
-		body, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			log.Printf("Read error: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response"})
+		var openAIResp OpenAIResponse
+		if err := json.NewDecoder(resp.Body).Decode(&openAIResp); err != nil {
+			http.Error(w, "Failed to decode response", http.StatusInternalServerError)
 			return
 		}
 
-		var openAIResp OpenAIResponse
-		if err := json.Unmarshal(body, &openAIResp); err != nil {
-			log.Printf("Unmarshal error: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to decode response"})
+		// Check if Choices slice is not empty
+		if len(openAIResp.Choices) == 0 {
+			http.Error(w, "No response from OpenAI", http.StatusInternalServerError)
 			return
 		}
 
 		message := openAIResp.Choices[0].Text
-		c.JSON(http.StatusOK, gin.H{
+		response := map[string]string{
 			"response_type": "in_channel",
 			"text":          message,
-		})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
 	})
 
 	port := os.Getenv("PORT")
@@ -123,7 +102,7 @@ func main() {
 	}
 
 	log.Printf("Starting server on port %s", port)
-	if err := r.Run(fmt.Sprintf(":%s", port)); err != nil {
+	if err := http.ListenAndServe(fmt.Sprintf(":%s", port), nil); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }

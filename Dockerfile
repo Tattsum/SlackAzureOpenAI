@@ -13,9 +13,8 @@ RUN go mod download
 # Copy the source code into the container
 COPY . .
 
-# Build the Go app for multiple architectures
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /server_amd64 .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o /server_arm64 .
+# Build the Go app for the current architecture
+RUN CGO_ENABLED=0 GOOS=linux go build -o /app/server .
 
 # Use a minimal base image for the final image
 FROM alpine:latest
@@ -23,11 +22,17 @@ FROM alpine:latest
 # Install necessary dependencies
 RUN apk --no-cache add ca-certificates
 
-# Copy the pre-built binary files from the builder stage
-COPY --from=builder /server_amd64 /server
+# Copy the pre-built binary file from the builder stage
+COPY --from=builder /app/server /server
+
+# Copy the .env file from the build context
+COPY .env /app/.env
 
 # Expose port 8080 to the outside world
 EXPOSE 8080
 
+# Set the working directory
+WORKDIR /app
+
 # Command to run the executable
-CMD ["/server"]
+CMD ["sh", "-c", "source /app/.env && /server"]
