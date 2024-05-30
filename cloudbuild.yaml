@@ -1,0 +1,8 @@
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build', '-t', 'gcr.io/slackazureopenai/slack-azure-openai', '.']
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['push', 'gcr.io/slackazureopenai/slack-azure-openai']
+- name: 'gcr.io/cloud-builders/gcloud'
+  args: ['run', 'deploy', 'slack-azure-openai', '--image', 'gcr.io/$PROJECT_ID/slack-azure-openai', '--region', 'asia-northeast1', '--platform', 'managed', '--allow-unauthenticated']
+
